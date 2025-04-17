@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:video_player/video_player.dart';
+import 'dart:math' as math;
 
 class PlayerControls extends StatefulWidget {
   final VideoPlayerController controller;
@@ -23,6 +24,9 @@ class _PlayerControlsState extends State<PlayerControls> {
   bool _isLoopingSegment = false;
   Duration? _loopStart;
   Duration? _loopEnd;
+
+  // ループ範囲を±500msに設定
+  static const int loopRangeMs = 500;
 
   @override
   void initState() {
@@ -48,20 +52,20 @@ class _PlayerControlsState extends State<PlayerControls> {
     }
   }
 
-  // 現在時刻の±2秒でループ再生を設定
+  // 現在時刻の±500msでループ再生を設定
   void _setLoopSegment() {
     final currentPosition = _controller.value.position;
     
-    // ループの開始位置（現在時刻-2秒、ただし0秒未満にはならない）
+    // ループの開始位置（現在時刻-500ms、ただし0秒未満にはならない）
     final loopStart = Duration(
-      milliseconds: max(0, currentPosition.inMilliseconds - 500)
+      milliseconds: math.max(0, currentPosition.inMilliseconds - loopRangeMs)
     );
     
-    // ループの終了位置（現在時刻+2秒、ただし動画長を超えない）
+    // ループの終了位置（現在時刻+500ms、ただし動画長を超えない）
     final loopEnd = Duration(
-      milliseconds: min(
+      milliseconds: math.min(
         _controller.value.duration.inMilliseconds,
-        currentPosition.inMilliseconds + 500
+        currentPosition.inMilliseconds + loopRangeMs
       )
     );
     
@@ -125,6 +129,27 @@ class _PlayerControlsState extends State<PlayerControls> {
       if (currentPosition >= _loopEnd!) {
         _controller.seekTo(_loopStart!);
       }
+      // 開始位置より前にいる場合も開始位置に移動
+      else if (currentPosition < _loopStart!) {
+        _controller.seekTo(_loopStart!);
+      }
+    }
+  }
+
+  // ループモード中に安全にシークする（ループ範囲内に制限）
+  void _safeSeek(Duration position) {
+    if (_isLoopingSegment && _loopStart != null && _loopEnd != null) {
+      // ループ範囲内に収める
+      final safePosition = Duration(
+        milliseconds: math.min(
+          math.max(position.inMilliseconds, _loopStart!.inMilliseconds),
+          _loopEnd!.inMilliseconds
+        )
+      );
+      _controller.seekTo(safePosition);
+    } else {
+      // 通常のシーク
+      _controller.seekTo(position);
     }
   }
 
@@ -133,13 +158,24 @@ class _PlayerControlsState extends State<PlayerControls> {
     final seconds = (duration.inSeconds % 60).toString().padLeft(2, '0');
     return "$minutes:$seconds";
   }
-  
-  // intの最小値・最大値を計算するヘルパーメソッド
-  int min(int a, int b) => a < b ? a : b;
-  int max(int a, int b) => a > b ? a : b;
 
   @override
   Widget build(BuildContext context) {
+    // ループモード中はスライダーの範囲を制限
+    double sliderMin = 0.0;
+    double sliderMax = _controller.value.duration.inSeconds.toDouble();
+    double sliderValue = _controller.value.position.inSeconds.toDouble();
+    
+    if (_isLoopingSegment && _loopStart != null && _loopEnd != null) {
+      sliderMin = _loopStart!.inSeconds.toDouble();
+      sliderMax = _loopEnd!.inSeconds.toDouble();
+      // 現在位置がループ範囲外なら調整
+      sliderValue = math.min(
+        math.max(sliderValue, sliderMin),
+        sliderMax
+      );
+    }
+
     return AnimatedOpacity(
       opacity: _hideControls ? 0.0 : 1.0,
       duration: const Duration(milliseconds: 300),
@@ -151,11 +187,11 @@ class _PlayerControlsState extends State<PlayerControls> {
           children: [
             // プログレスバー
             Slider(
-              value: _controller.value.position.inSeconds.toDouble(),
-              min: 0.0,
-              max: _controller.value.duration.inSeconds.toDouble(),
+              value: sliderValue,
+              min: sliderMin,
+              max: sliderMax,
               onChanged: (value) {
-                _controller.seekTo(Duration(seconds: value.toInt()));
+                _safeSeek(Duration(seconds: value.toInt()));
               },
             ),
             
@@ -174,8 +210,11 @@ class _PlayerControlsState extends State<PlayerControls> {
                       'ループ: ${_formatDuration(_loopStart!)} - ${_formatDuration(_loopEnd!)}',
                       style: const TextStyle(color: Colors.lightGreenAccent),
                     ),
+                  // ループモード中はループ終了時間を表示、通常モードでは動画全体の長さを表示
                   Text(
-                    _formatDuration(_controller.value.duration),
+                    _isLoopingSegment && _loopEnd != null
+                        ? _formatDuration(_loopEnd!)
+                        : _formatDuration(_controller.value.duration),
                     style: const TextStyle(color: Colors.white),
                   ),
                 ],
@@ -190,8 +229,9 @@ class _PlayerControlsState extends State<PlayerControls> {
                   icon: const Icon(Icons.replay_10),
                   color: Colors.white,
                   onPressed: () {
+                    // ループモード中は安全にシーク
                     final newPosition = _controller.value.position - const Duration(seconds: 10);
-                    _controller.seekTo(newPosition);
+                    _safeSeek(newPosition);
                   },
                 ),
                 IconButton(
@@ -206,8 +246,9 @@ class _PlayerControlsState extends State<PlayerControls> {
                   icon: const Icon(Icons.forward_10),
                   color: Colors.white,
                   onPressed: () {
+                    // ループモード中は安全にシーク
                     final newPosition = _controller.value.position + const Duration(seconds: 10);
-                    _controller.seekTo(newPosition);
+                    _safeSeek(newPosition);
                   },
                 ),
                 // ループ再生ボタン
@@ -216,7 +257,7 @@ class _PlayerControlsState extends State<PlayerControls> {
                     _isLoopingSegment ? Icons.loop_outlined : Icons.loop,
                   ),
                   color: _isLoopingSegment ? Colors.lightGreenAccent : Colors.white,
-                  tooltip: _isLoopingSegment ? 'ループ再生を解除' : '現在位置の前後2秒をループ再生',
+                  tooltip: _isLoopingSegment ? 'ループ再生を解除' : '現在位置の前後500msをループ再生',
                   onPressed: _isLoopingSegment ? _cancelLoop : _setLoopSegment,
                 ),
               ],
