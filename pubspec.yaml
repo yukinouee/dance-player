@@ -13,7 +13,7 @@ dependencies:
   cupertino_icons: ^1.0.8
   # 動画プレイヤー関連パッケージ
   video_player: ^2.8.1
-  file_picker: ^6.1.1
+  file_picker: ^8.3.6
   path_provider: ^2.1.2
   # 状態管理とDI
   provider: ^6.1.1
