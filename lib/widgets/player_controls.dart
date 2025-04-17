@@ -26,8 +26,20 @@ class _PlayerControlsState extends State<PlayerControls> {
   Duration? _loopEnd;
   bool _isPreSeekingToStart = false;
 
-  // ループ範囲を±500msに設定
-  static const int loopRangeMs = 500;
+  // ループ範囲を設定可能に (デフォルトは500ms)
+  int _loopRangeMs = 500;
+  
+  // ループ範囲の最小値と最大値（0.1秒～10秒）
+  static const int _minLoopRangeMs = 100;
+  static const int _maxLoopRangeMs = 10000;
+
+  // 設定可能なループ範囲の選択肢（秒）
+  static const List<double> _loopRangeOptions = [
+    0.1, 0.25, 0.5, 1.0, 2.0, 3.0, 5.0, 10.0
+  ];
+  
+  // ループ範囲設定メニューの表示状態
+  bool _showLoopRangeMenu = false;
   
   // ループ終端から何ミリ秒前に開始位置へのプリシークを始めるか
   static const int preSeekThresholdMs = 50;
@@ -95,23 +107,99 @@ class _PlayerControlsState extends State<PlayerControls> {
   void _toggleSpeedMenu() {
     setState(() {
       _showSpeedMenu = !_showSpeedMenu;
+      if (_showSpeedMenu) {
+        // 他のメニューを閉じる
+        _showLoopRangeMenu = false;
+      }
     });
   }
-
-  // 現在時刻の±500msでループ再生を設定
-  void _setLoopSegment() {
+  
+  // ループ範囲メニューの表示切替
+  void _toggleLoopRangeMenu() {
+    setState(() {
+      _showLoopRangeMenu = !_showLoopRangeMenu;
+      if (_showLoopRangeMenu) {
+        // 他のメニューを閉じる
+        _showSpeedMenu = false;
+      }
+    });
+  }
+  
+  // ループ範囲を変更する
+  void _changeLoopRange(double rangeInSeconds) {
+    final rangeMs = (rangeInSeconds * 1000).toInt();
+    if (rangeMs >= _minLoopRangeMs && rangeMs <= _maxLoopRangeMs) {
+      setState(() {
+        _loopRangeMs = rangeMs;
+        _showLoopRangeMenu = false;
+      });
+      
+      // ループ中ならループ範囲を更新
+      if (_isLoopingSegment) {
+        _updateLoopSegment();
+      }
+      
+      // ユーザーに通知
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('ループ範囲: 前後 $rangeInSeconds 秒'),
+          duration: const Duration(seconds: 1),
+        ),
+      );
+    }
+  }
+  
+  // 現在のループ範囲で再計算する
+  void _updateLoopSegment() {
+    if (!_isLoopingSegment) return;
+    
     final currentPosition = _controller.value.position;
     
-    // ループの開始位置（現在時刻-500ms、ただし0秒未満にはならない）
+    // ループ中心時間（現在のループの中央値）
+    Duration loopCenter;
+    if (_loopStart != null && _loopEnd != null) {
+      final centerMs = (_loopStart!.inMilliseconds + _loopEnd!.inMilliseconds) ~/ 2;
+      loopCenter = Duration(milliseconds: centerMs);
+    } else {
+      loopCenter = currentPosition;
+    }
+    
+    // 新しいループ範囲で再計算
     final loopStart = Duration(
-      milliseconds: math.max(0, currentPosition.inMilliseconds - loopRangeMs)
+      milliseconds: math.max(0, loopCenter.inMilliseconds - _loopRangeMs)
     );
     
-    // ループの終了位置（現在時刻+500ms、ただし動画長を超えない）
     final loopEnd = Duration(
       milliseconds: math.min(
         _controller.value.duration.inMilliseconds,
-        currentPosition.inMilliseconds + loopRangeMs
+        loopCenter.inMilliseconds + _loopRangeMs
+      )
+    );
+    
+    setState(() {
+      _loopStart = loopStart;
+      _loopEnd = loopEnd;
+      _isPreSeekingToStart = false;
+    });
+    
+    // 開始位置にシーク
+    _controller.seekTo(loopStart);
+  }
+
+  // 現在時刻の前後指定時間でループ再生を設定
+  void _setLoopSegment() {
+    final currentPosition = _controller.value.position;
+    
+    // ループの開始位置（現在時刻-loopRangeMs、ただし0秒未満にはならない）
+    final loopStart = Duration(
+      milliseconds: math.max(0, currentPosition.inMilliseconds - _loopRangeMs)
+    );
+    
+    // ループの終了位置（現在時刻+loopRangeMs、ただし動画長を超えない）
+    final loopEnd = Duration(
+      milliseconds: math.min(
+        _controller.value.duration.inMilliseconds,
+        currentPosition.inMilliseconds + _loopRangeMs
       )
     );
     
@@ -130,9 +218,12 @@ class _PlayerControlsState extends State<PlayerControls> {
       _controller.play();
     }
     
+    // ループ範囲を秒に変換して表示
+    final loopRangeSeconds = (_loopRangeMs / 1000).toStringAsFixed(1);
+    
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
-        content: Text('${_formatDuration(loopStart)} から ${_formatDuration(loopEnd)} までループ再生中'),
+        content: Text('${_formatDuration(loopStart)} から ${_formatDuration(loopEnd)} までループ再生中 (±$loopRangeSeconds秒)'),
         duration: const Duration(seconds: 2),
         action: SnackBarAction(
           label: '解除',
@@ -299,6 +390,47 @@ class _PlayerControlsState extends State<PlayerControls> {
               ),
             ),
             
+            // ループ範囲選択メニュー (展開時のみ表示)
+            if (_showLoopRangeMenu)
+              Container(
+                height: 50,
+                margin: const EdgeInsets.only(bottom: 8.0),
+                child: ListView.builder(
+                  scrollDirection: Axis.horizontal,
+                  itemCount: _loopRangeOptions.length,
+                  itemBuilder: (context, index) {
+                    final rangeInSeconds = _loopRangeOptions[index];
+                    final rangeMs = (rangeInSeconds * 1000).toInt();
+                    final isSelected = rangeMs == _loopRangeMs;
+                    
+                    return GestureDetector(
+                      onTap: () => _changeLoopRange(rangeInSeconds),
+                      child: Container(
+                        width: 50,
+                        margin: const EdgeInsets.symmetric(horizontal: 4.0),
+                        decoration: BoxDecoration(
+                          color: isSelected
+                              ? Colors.lightGreenAccent.withOpacity(0.7)
+                              : Colors.white.withOpacity(0.2),
+                          borderRadius: BorderRadius.circular(20),
+                        ),
+                        child: Center(
+                          child: Text(
+                            '${rangeInSeconds}s',
+                            style: TextStyle(
+                              color: isSelected ? Colors.black : Colors.white,
+                              fontWeight: isSelected 
+                                  ? FontWeight.bold 
+                                  : FontWeight.normal,
+                            ),
+                          ),
+                        ),
+                      ),
+                    );
+                  },
+                ),
+              ),
+            
             // 倍速選択メニュー (展開時のみ表示)
             if (_showSpeedMenu)
               Container(
@@ -370,13 +502,47 @@ class _PlayerControlsState extends State<PlayerControls> {
                   },
                 ),
                 // ループ再生ボタン
-                IconButton(
-                  icon: Icon(
-                    _isLoopingSegment ? Icons.loop_outlined : Icons.loop,
-                  ),
-                  color: _isLoopingSegment ? Colors.lightGreenAccent : Colors.white,
-                  tooltip: _isLoopingSegment ? 'ループ再生を解除' : '現在位置の前後500msをループ再生',
-                  onPressed: _isLoopingSegment ? _cancelLoop : _setLoopSegment,
+                Stack(
+                  alignment: Alignment.center,
+                  children: [
+                    IconButton(
+                      icon: Icon(
+                        _isLoopingSegment ? Icons.loop_outlined : Icons.loop,
+                      ),
+                      color: _isLoopingSegment ? Colors.lightGreenAccent : Colors.white,
+                      tooltip: _isLoopingSegment ? 'ループ再生を解除' : '現在位置の前後をループ再生',
+                      onPressed: _isLoopingSegment ? _cancelLoop : _setLoopSegment,
+                    ),
+                    // ループ設定ボタン
+                    Positioned(
+                      right: 0,
+                      bottom: 0,
+                      child: GestureDetector(
+                        onTap: _toggleLoopRangeMenu,
+                        child: Container(
+                          width: 22,
+                          height: 22,
+                          decoration: BoxDecoration(
+                            color: _showLoopRangeMenu 
+                                ? Colors.lightGreenAccent 
+                                : Colors.black.withOpacity(0.7),
+                            shape: BoxShape.circle,
+                            border: Border.all(color: Colors.white, width: 1),
+                          ),
+                          child: Center(
+                            child: Text(
+                              '${(_loopRangeMs / 1000).toStringAsFixed(1)}s',
+                              style: TextStyle(
+                                color: _showLoopRangeMenu ? Colors.black : Colors.white,
+                                fontSize: 8,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
                 ),
                 // 倍速ボタン
                 Stack(
